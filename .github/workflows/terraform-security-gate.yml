@@ -1,0 +1,73 @@
+name: Terraform security gate
+
+# Runs on any change to Terraform code, on either the vulnerable-baseline
+# or hardened-remediated branch. Blocks merge on HIGH/CRITICAL findings.
+on:
+  pull_request:
+    paths:
+      - "**/*.tf"
+      - "**/*.tfvars"
+  push:
+    branches:
+      - hardened-remediated
+
+permissions:
+  contents: read
+  pull-requests: write   # lets the job comment results on the PR
+  security-events: write # lets the job upload SARIF to GitHub code scanning
+
+jobs:
+  trivy-scan:
+    name: Trivy IaC scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pinned to the commit for trivy-action v0.35.0, the tag confirmed
+      # unaffected by the March 2026 trivy-action supply chain compromise
+      # (CVE-2026-33634). Mutable tags such as @v0.36.0 can be force-pushed
+      # to a different commit without any visible change to this file, so
+      # a full commit SHA is the only reference that can't be silently
+      # swapped out from under the workflow.
+      - name: Run Trivy config scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: "config"
+          scan-ref: "."
+          severity: "HIGH,CRITICAL"
+          exit-code: "1"
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      - name: Upload Trivy results to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: "trivy-results.sarif"
+
+  checkov-scan:
+    name: Checkov policy scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Checkov runs alongside Trivy rather than replacing it: broader
+      # built-in policy count (1,000+) and a different detection engine
+      # catches things a single-tool gate can miss. Pin this the same
+      # way once you've picked and verified a release for your repo.
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: "."
+          framework: terraform
+          soft_fail: false
+          output_format: sarif
+          output_file_path: "checkov-results.sarif"
+
+      - name: Upload Checkov results to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: "checkov-results.sarif"
